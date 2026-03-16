@@ -1,16 +1,29 @@
 from fastapi import FastAPI, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import string
 import random
 from fastapi.responses import RedirectResponse
 from database import engine, SessionLocal, Base
 from models import URL
 from sqlalchemy.orm import Session
+from typing import Optional
 
 Base.metadata.create_all(bind = engine)
 
 class URLRequest(BaseModel):
     url: str
+    custom_code: Optional[str] = None
+    @field_validator("custom_code")
+    @classmethod
+    def check_custom_code(cls, cc):
+        if cc == None:
+            return None
+        if not cc.isalnum():
+            raise ValueError("Custom code must be alpha numeric")
+        if not 3 < len(cc) < 15:
+            raise ValueError("Custom code must be between 3 and 15 in length")
+        return cc
+
 
 def get_db():
     db = SessionLocal()
@@ -33,16 +46,28 @@ def get_all(db: Session = Depends(get_db)):
 
 @app.post("/url")
 def url_request(request: URLRequest, db: Session = Depends(get_db)):
-    code = generate_short_code()
-    while db.query(URL).filter(URL.short_code == code).first() is not None:
+    if request.custom_code:
+        code_entry = db.query(URL).filter(request.custom_code == URL.short_code).first()
+        if code_entry:
+            raise HTTPException(status_code = 409, detail = "Custom code already exists")
+        new_url = URL(short_code = request.custom_code, original_url = request.url)
+        db.add(new_url)
+        db.commit()
+        db.refresh(new_url)
+        return {"short_code": request.custom_code,
+                "short_url": "http://127.0.0.1:8000/short_url/" + request.custom_code,
+                "original_url": request.url}
+    else:
         code = generate_short_code()
-    new_url = URL(short_code = code, original_url = request.url)
-    db.add(new_url)
-    db.commit()
-    db.refresh(new_url)
-    return {"short_code": code,
-            "short_url": "http://127.0.0.1:8000/short_url/" + code,
-            "original_url": request.url}
+        while db.query(URL).filter(URL.short_code == code).first() is not None:
+            code = generate_short_code()
+        new_url = URL(short_code = code, original_url = request.url)
+        db.add(new_url)
+        db.commit()
+        db.refresh(new_url)
+        return {"short_code": code,
+                "short_url": "http://127.0.0.1:8000/short_url/" + code,
+                "original_url": request.url}
 
 @app.get("/short_url/{code}")
 def shortener(code: str, db: Session = Depends(get_db)):
