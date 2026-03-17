@@ -1,10 +1,10 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from pydantic import BaseModel, field_validator
 import string
 import random
 from fastapi.responses import RedirectResponse
 from database import engine, SessionLocal, Base
-from models import URL
+from models import URL, Click
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -44,6 +44,18 @@ app = FastAPI()
 def get_all(db: Session = Depends(get_db)):
     return db.query(URL).all()
 
+@app.get("/stats/{code}")
+def get_stats(code: str, db: Session = Depends(get_db)):
+    code_entry = db.query(URL).filter(code == URL.short_code).first()
+    if code_entry:
+        click_list = []
+        for click in code_entry.clicks:
+            click_list.append({"time": click.click_date,"ip": click.ip_address, "agent": click.user_agent})
+        return {"short_code": code, "original_url": code_entry.original_url, "total_clicks": len(click_list), "clicks": click_list}
+    else:
+        raise HTTPException(status_code=404, detail="Short code does not exist")
+
+
 @app.post("/url")
 def url_request(request: URLRequest, db: Session = Depends(get_db)):
     if request.custom_code:
@@ -70,9 +82,12 @@ def url_request(request: URLRequest, db: Session = Depends(get_db)):
                 "original_url": request.url}
 
 @app.get("/short_url/{code}")
-def shortener(code: str, db: Session = Depends(get_db)):
+def shortener(code: str, request: Request, db: Session = Depends(get_db)):
     url_entry = db.query(URL).filter(URL.short_code == code).first()
     if url_entry:
+        new_click = Click(url_id = url_entry.id, ip_address = request.client.host, user_agent = request.headers.get("user-agent"))
+        db.add(new_click)
+        db.commit()
         return RedirectResponse(url_entry.original_url)
     raise HTTPException(status_code = 404, detail = "Could not access website")
 
