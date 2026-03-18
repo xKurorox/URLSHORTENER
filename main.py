@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Depends, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, HttpUrl, field_validator
 import string
 import random
 from fastapi.responses import RedirectResponse
@@ -7,12 +7,14 @@ from database import engine, SessionLocal, Base
 from models import URL, Click
 from sqlalchemy.orm import Session
 from typing import Optional
+from datetime import datetime, timedelta
 
 Base.metadata.create_all(bind = engine)
 
 class URLRequest(BaseModel):
-    url: str
+    url: HttpUrl
     custom_code: Optional[str] = None
+    expires_in_minutes: Optional[int] = None
     @field_validator("custom_code")
     @classmethod
     def check_custom_code(cls, cc):
@@ -58,33 +60,41 @@ def get_stats(code: str, db: Session = Depends(get_db)):
 
 @app.post("/url")
 def url_request(request: URLRequest, db: Session = Depends(get_db)):
+    if request.expires_in_minutes is not None:
+        expires_at = datetime.utcnow() + timedelta(minutes = request.expires_in_minutes)
+    else:
+        expires_at = None
     if request.custom_code:
         code_entry = db.query(URL).filter(request.custom_code == URL.short_code).first()
         if code_entry:
             raise HTTPException(status_code = 409, detail = "Custom code already exists")
-        new_url = URL(short_code = request.custom_code, original_url = request.url)
+        new_url = URL(short_code = request.custom_code, original_url = str(request.url), expires_at = expires_at)
         db.add(new_url)
         db.commit()
         db.refresh(new_url)
         return {"short_code": request.custom_code,
                 "short_url": "http://127.0.0.1:8000/short_url/" + request.custom_code,
-                "original_url": request.url}
+                "original_url": str(request.url),
+                "expires_at": expires_at}
     else:
         code = generate_short_code()
         while db.query(URL).filter(URL.short_code == code).first() is not None:
             code = generate_short_code()
-        new_url = URL(short_code = code, original_url = request.url)
+        new_url = URL(short_code = code, original_url = str(request.url), expires_at = expires_at)
         db.add(new_url)
         db.commit()
         db.refresh(new_url)
         return {"short_code": code,
                 "short_url": "http://127.0.0.1:8000/short_url/" + code,
-                "original_url": request.url}
+                "original_url": str(request.url),
+                "expires_at": expires_at}
 
 @app.get("/short_url/{code}")
 def shortener(code: str, request: Request, db: Session = Depends(get_db)):
-    url_entry = db.query(URL).filter(URL.short_code == code).first()
+    url_entry = db.query(URL).filter(URL.short_code == code).first()     
     if url_entry:
+        if url_entry.expires_at is not None and datetime.utcnow() > url_entry.expires_at:
+            raise HTTPException(status_code=410, detail="This link has expired")
         new_click = Click(url_id = url_entry.id, ip_address = request.client.host, user_agent = request.headers.get("user-agent"))
         db.add(new_click)
         db.commit()
