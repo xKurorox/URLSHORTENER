@@ -12,7 +12,7 @@ from database import engine, SessionLocal, Base
 from models import URL, Click
 from sqlalchemy.orm import Session
 from typing import Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Create all database tables defined in models if they don't already exist
 Base.metadata.create_all(bind = engine)
@@ -78,7 +78,7 @@ def get_stats(code: str, db: Session = Depends(get_db)):
 def url_request(request: URLRequest, db: Session = Depends(get_db)):
     # Calculate expiry timestamp if a duration was provided
     if request.expires_in_minutes is not None:
-        expires_at = datetime.utcnow() + timedelta(minutes = request.expires_in_minutes)
+        expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes = request.expires_in_minutes)
     else:
         expires_at = None
 
@@ -115,7 +115,7 @@ def shortener(code: str, request: Request, db: Session = Depends(get_db)):
     url_entry = db.query(URL).filter(URL.short_code == code).first()
     if url_entry:
         # Reject the request if the link has passed its expiry time
-        if url_entry.expires_at is not None and datetime.utcnow() > url_entry.expires_at:
+        if url_entry.expires_at is not None and datetime.now(timezone.utc).replace(tzinfo=None) > url_entry.expires_at:
             raise HTTPException(status_code=410, detail="This link has expired")
         # Log the click with the visitor's IP and browser user-agent
         new_click = Click(url_id = url_entry.id, ip_address = request.client.host, user_agent = request.headers.get("user-agent"))
